@@ -58,6 +58,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Empty post", http.StatusBadRequest)
 		return
 	} else {
+		// form string from bytes
 		newPostString = string(requestBody)
 		for i := 0; i < len(wordBlacklist); i++ {
 			if strings.Contains(strings.ToLower(newPostString), wordBlacklist[i]) {
@@ -65,6 +66,15 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "Post rejected", http.StatusBadRequest)
 				return
 			}
+		}
+	}
+
+	// angel mode masks client's real ip address
+	if len(newPostString) >= 4 && newPostString[:4] == "££" {
+		ipAddress = "1.1.1.1"
+		// unless it would result in an empty post, remove the leading "££" (four characters in reality)
+		if newPostString != "££" {
+			newPostString = newPostString[4:]
 		}
 	}
 
