@@ -157,8 +157,8 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		if restricted {
 			http.Error(w, restrictedMessage, http.StatusForbidden)
 			return
-		} else if startTime.Unix() < lastPosted+30 {
-			http.Error(w, "Please wait 30 seconds before posting again.", http.StatusForbidden)
+		} else if startTime.Unix() < lastPosted+15 {
+			http.Error(w, "Please wait 15 seconds before posting again.", http.StatusForbidden)
 			return
 		}
 	}
