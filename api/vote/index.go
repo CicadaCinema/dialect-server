@@ -62,8 +62,9 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close(context.Background())
 
-	// get last post seen by user
+	// get last op seen by user and the op of the post to be voted on
 	var lastPostSeen int64
+	var opPost int64
 	err = conn.QueryRow(context.Background(), "SELECT lastpostseen FROM Users where ip=$1;", ipAddress).Scan(&lastPostSeen)
 	if err == pgx.ErrNoRows {
 		http.Error(w, "User not found", http.StatusBadRequest)
@@ -71,7 +72,16 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	} else if err != nil {
 		http.Error(w, "Unable to read vote sender user profile: "+err.Error(), http.StatusInternalServerError)
 		return
-	} else if postId != lastPostSeen {
+	}
+	err = conn.QueryRow(context.Background(), "SELECT op FROM Posts where id=$1;", postId).Scan(&opPost)
+	if err == pgx.ErrNoRows {
+		http.Error(w, "Post not found", http.StatusBadRequest)
+		return
+	} else if err != nil {
+		http.Error(w, "Unable to read post to be voted: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if opPost != lastPostSeen {
 		http.Error(w, "User cannot vote on this post", http.StatusForbidden)
 		return
 	}
@@ -91,16 +101,39 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	// actually perform sql operation on the post itself and both user profiles
 	switch voteAction := r.Header.Get("vote-action"); voteAction {
 	case "like":
-		_, err = conn.Exec(context.Background(), "UPDATE Users SET LastPostSeen = 0, LikesSent = LikesSent + 1 WHERE ip = $1; UPDATE Users SET LikesReceived = LikesReceived + 1 WHERE Ip = $2; UPDATE Posts SET Likes = Likes + 1 WHERE Id = $3;", ipAddress, recipientIp, postId)
+		_, err = conn.Exec(context.Background(), "UPDATE Users SET LastPostSeen = 0, LikesSent = LikesSent + 1 WHERE ip = $1;", ipAddress)
+		if err != nil {
+			http.Error(w, "Unable to perform vote operation on database (01): "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_, err = conn.Exec(context.Background(), "UPDATE Users SET LikesReceived = LikesReceived + 1 WHERE Ip = $1;", recipientIp)
+		if err != nil {
+			http.Error(w, "Unable to perform vote operation on database (02): "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_, err = conn.Exec(context.Background(), "UPDATE Posts SET Likes = Likes + 1 WHERE Id = $1;", postId)
+		if err != nil {
+			http.Error(w, "Unable to perform vote operation on database (03): "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 	case "dislike":
-		_, err = conn.Exec(context.Background(), "UPDATE Users SET LastPostSeen = 0, DislikesSent = DislikesSent + 1 WHERE ip = $1; UPDATE Users SET DislikesReceived = DislikesReceived + 1 WHERE Ip = $2; UPDATE Posts SET Dislikes = Dislikes + 1 WHERE Id = $3;", ipAddress, recipientIp, postId)
+		_, err = conn.Exec(context.Background(), "UPDATE Users SET LastPostSeen = 0, DislikesSent = DislikesSent + 1 WHERE ip = $1;", ipAddress)
+		if err != nil {
+			http.Error(w, "Unable to perform vote operation on database (04): "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_, err = conn.Exec(context.Background(), "UPDATE Users SET DislikesReceived = DislikesReceived + 1 WHERE Ip = $1;", recipientIp)
+		if err != nil {
+			http.Error(w, "Unable to perform vote operation on database (05): "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_, err = conn.Exec(context.Background(), "UPDATE Posts SET Dislikes = Dislikes + 1 WHERE Id = $1;", postId)
+		if err != nil {
+			http.Error(w, "Unable to perform vote operation on database (06): "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 	default:
 		http.Error(w, "Vote action malformed or non existent", http.StatusBadRequest)
-		return
-	}
-	if err != nil {
-		// could not write post for some reason
-		http.Error(w, "Unable to perform vote operation on database: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 

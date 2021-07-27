@@ -15,12 +15,18 @@ import (
 
 var wordBlacklist = strings.Fields(os.Getenv("BLACKLIST"))
 
+type ResponseBody struct {
+	Contents []string
+	Paths    []string
+	Ids      []int
+}
+
 func Handler(w http.ResponseWriter, r *http.Request) {
 	var err error
 	startTime := time.Now()
 
 	// set essential headers
-	w.Header().Set("Content-type", "text/plain")
+	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Headers", "*")
 	w.Header().Set("Access-Control-Expose-Headers", "*")
@@ -157,32 +163,61 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// everything looks good
-	// let's find a post to show
-	var postContent string
-	var postId int
-	err = conn.QueryRow(context.Background(), "SELECT content, id FROM Posts WHERE ip != $1 AND Hidden = false ORDER BY RANDOM() LIMIT 1;", ipAddress).Scan(&postContent, &postId)
+	// SQL READ: find a thread to show
+	rows, err := conn.Query(context.Background(), "SELECT content, id, path, op FROM posts WHERE op = (SELECT op FROM posts WHERE ip != $1 AND Hidden = false ORDER BY RANDOM() LIMIT 1) ORDER BY Path;", ipAddress)
 	if err == pgx.ErrNoRows {
-		// could not find any posts to show for some reason
-		http.Error(w, "No posts found.", http.StatusInternalServerError)
+		// could not find any threads at all
+		http.Error(w, "No threads found.", http.StatusInternalServerError)
 		return
 	} else if err != nil {
-		// could not find post to show for some reason
-		http.Error(w, "Unable to retrieve post: "+err.Error(), http.StatusInternalServerError)
+		// could not find thread to show for some other reason
+		http.Error(w, "Unable to retrieve thread: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("post-id", strconv.Itoa(postId))
+	defer rows.Close()
 
-	// update Users table
+	// SQL READ: populate slices with row contents
+	threadContents := make([]string, 0)
+	threadPaths := make([]string, 0)
+	threadIds := make([]int, 0)
+	var threadOp int
+	for rows.Next() {
+		var postContent string
+		var postPath string
+		var postId int
+		// TODO: find better way to get OPs - currently we scan every post for its op even though they are all the same
+		err := rows.Scan(&postContent, &postId, &postPath, &threadOp)
+		if err != nil {
+			http.Error(w, "Unable to scan post in thread: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// add scanned values to slices
+		threadContents = append(threadContents, postContent)
+		threadPaths = append(threadPaths, postPath)
+		threadIds = append(threadIds, postId)
+
+	}
+	// prepare struct
+	if !(len(threadContents) == len(threadIds) && len(threadContents) == len(threadIds)) {
+		http.Error(w, "Thread slice length does not match, aborting", http.StatusInternalServerError)
+		return
+	}
+	responseBody := ResponseBody{
+		Contents: threadContents,
+		Paths:    threadPaths,
+		Ids:      threadIds,
+	}
+
+	// SQL WRITE: update Users table
 	if newUser {
-		_, err = conn.Exec(context.Background(), "INSERT INTO Users (ip, lastPosted, restricted, restrictedMessage, lastPostSeen, likesReceived, likesSent, dislikesReceived, dislikesSent) VALUES ($1, $2, false, '', $3, 0, 0, 0, 0);", ipAddress, strconv.FormatInt(startTime.Unix(), 10), postId)
+		_, err = conn.Exec(context.Background(), "INSERT INTO Users (ip, lastPosted, restricted, restrictedMessage, lastPostSeen, likesReceived, likesSent, dislikesReceived, dislikesSent) VALUES ($1, $2, false, '', $3, 0, 0, 0, 0);", ipAddress, strconv.FormatInt(startTime.Unix(), 10), threadOp)
 		if err != nil {
 			// could not write post for some reason
 			http.Error(w, "Unable to update new user's details: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 	} else {
-		_, err = conn.Exec(context.Background(), "UPDATE Users SET LastPosted = $1, LastPostSeen = $2 WHERE Ip = $3;", strconv.FormatInt(startTime.Unix(), 10), postId, ipAddress)
+		_, err = conn.Exec(context.Background(), "UPDATE Users SET LastPosted = $1, LastPostSeen = $2 WHERE Ip = $3;", strconv.FormatInt(startTime.Unix(), 10), threadOp, ipAddress)
 		if err != nil {
 			// could not write post for some reason
 			http.Error(w, "Unable to update existing user's details: "+err.Error(), http.StatusInternalServerError)
@@ -190,17 +225,35 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// update Posts table
-	_, err = conn.Exec(context.Background(), "INSERT INTO Posts (Timestamp, Content, Ip, Hidden, Likes, Dislikes) VALUES ($1, $2, $3, false, 0, 0);", strconv.FormatInt(startTime.Unix(), 10), newPostString, ipAddress)
-	if err != nil {
-		// could not write post for some reason
-		http.Error(w, "Unable to write new post: "+err.Error(), http.StatusInternalServerError)
-		return
+	// SQL WRITE: update Posts table
+	if replyId := r.Header.Get("reply-id"); replyId == "" {
+		// new post
+		_, err = conn.Exec(context.Background(), "INSERT INTO Posts (Timestamp, Content, Ip, Hidden, Likes, Dislikes) VALUES ($1, $2, $3, false, 0, 0);", strconv.FormatInt(startTime.Unix(), 10), newPostString, ipAddress)
+		if err != nil {
+			http.Error(w, "Unable to write new post (01): "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_, err = conn.Exec(context.Background(), "UPDATE Posts SET Op = Id, Path = CONCAT('/',CAST(id AS VARCHAR)) WHERE Op IS NULL AND Path IS NULL;")
+		if err != nil {
+			http.Error(w, "Unable to write new post (02): "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		// reply
+		var tempId int
+		err = conn.QueryRow(context.Background(), "INSERT INTO Posts (Timestamp, Content, Ip, Hidden, Likes, Dislikes, Op, Path) VALUES ($1, $2, $3, false, 0, 0, (SELECT Op FROM Posts WHERE Id = $4), (SELECT Path FROM Posts WHERE Id = $4)) RETURNING Id;", strconv.FormatInt(startTime.Unix(), 10), newPostString, ipAddress, replyId).Scan(&tempId)
+		if err != nil {
+			http.Error(w, "Unable to write new post (03): "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_, err = conn.Exec(context.Background(), "UPDATE Posts SET Path = CONCAT(Path, '/', CAST(Id AS VARCHAR)) WHERE Id = $1;", tempId)
+		if err != nil {
+			http.Error(w, "Unable to write new post (04): "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 
-	//fmt.Fprintf(w, "<h1>Hello from Go! Version: %s</h1>", runtime.Version())
-
-	// finally show chosen post
-	fmt.Fprintf(w, postContent)
+	// HTTP: finally show chosen post
+	json.NewEncoder(w).Encode(responseBody)
 	fmt.Println("DEBUG: this successful request took", time.Since(startTime).Milliseconds(), "ms")
 }
