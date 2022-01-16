@@ -15,10 +15,10 @@ import (
 
 var wordBlacklist = strings.Fields(os.Getenv("BLACKLIST"))
 
-type ResponseBody struct {
-	Contents []string
-	Paths    []string
-	Ids      []int
+type PostResponse struct {
+	Content string
+	Path    string
+	Id      int
 }
 
 func Handler(w http.ResponseWriter, r *http.Request) {
@@ -177,9 +177,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	// SQL READ: populate slices with row contents
-	threadContents := make([]string, 0)
-	threadPaths := make([]string, 0)
-	threadIds := make([]int, 0)
+	retrievedPosts := make([]PostResponse, 0)
 	var threadOp int
 	for rows.Next() {
 		var postContent string
@@ -192,20 +190,12 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// add scanned values to slices
-		threadContents = append(threadContents, postContent)
-		threadPaths = append(threadPaths, postPath)
-		threadIds = append(threadIds, postId)
+		retrievedPosts = append(retrievedPosts, PostResponse{
+			Content: postContent,
+			Path:    postPath,
+			Id:      postId,
+		})
 
-	}
-	// prepare struct
-	if !(len(threadContents) == len(threadIds) && len(threadContents) == len(threadIds)) {
-		http.Error(w, "Thread slice length does not match, aborting", http.StatusInternalServerError)
-		return
-	}
-	responseBody := ResponseBody{
-		Contents: threadContents,
-		Paths:    threadPaths,
-		Ids:      threadIds,
 	}
 
 	// SQL WRITE: update Users table
@@ -254,6 +244,6 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// HTTP: finally show chosen post
-	json.NewEncoder(w).Encode(responseBody)
+	json.NewEncoder(w).Encode(retrievedPosts)
 	fmt.Println("DEBUG: this successful request took", time.Since(startTime).Milliseconds(), "ms")
 }
