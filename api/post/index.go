@@ -16,9 +16,9 @@ import (
 var wordBlacklist = strings.Fields(os.Getenv("BLACKLIST"))
 
 type PostResponse struct {
-	Content string
-	Path    string
-	Id      int
+	PostContent string
+	Path        string
+	Id          int
 }
 
 func Handler(w http.ResponseWriter, r *http.Request) {
@@ -191,9 +191,9 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		}
 		// add scanned values to slices
 		retrievedPosts = append(retrievedPosts, PostResponse{
-			Content: postContent,
-			Path:    postPath,
-			Id:      postId,
+			PostContent: postContent,
+			Path:        postPath,
+			Id:          postId,
 		})
 
 	}
