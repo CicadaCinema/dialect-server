@@ -15,10 +15,19 @@ import (
 
 var wordBlacklist = strings.Fields(os.Getenv("BLACKLIST"))
 
+type IncomingPostRequest struct {
+	PostContent string `json:"postContent"`
+	ReplyId     int    `json:"replyId"`
+}
+
 type PostResponse struct {
-	PostContent string
-	Path        string
-	Id          int
+	PostContent string `json:"postContent"`
+	Path        string `json:"path"`
+	Id          int    `json:"id"`
+}
+
+type GoogleResponse struct {
+	Success bool
 }
 
 func Handler(w http.ResponseWriter, r *http.Request) {
@@ -54,20 +63,19 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// process request body
+	var incomingRequest IncomingPostRequest
 	defer r.Body.Close()
-	var newPostString string
-	if requestBody, err := io.ReadAll(r.Body); err != nil {
-		http.Error(w, "Unable to read request body: "+err.Error(), http.StatusInternalServerError)
+	err = json.NewDecoder(r.Body).Decode(&incomingRequest)
+	if err != nil {
+		http.Error(w, "Unable to decode json request body: "+err.Error(), http.StatusBadRequest)
 		return
-	} else if len(requestBody) == 0 {
-		// body is empty
+	} else if len(incomingRequest.PostContent) == 0 {
+		// post is empty
 		http.Error(w, "Empty post", http.StatusBadRequest)
 		return
 	} else {
-		// form string from bytes
-		newPostString = string(requestBody)
 		for i := 0; i < len(wordBlacklist); i++ {
-			if strings.Contains(strings.ToLower(newPostString), wordBlacklist[i]) {
+			if strings.Contains(strings.ToLower(incomingRequest.PostContent), wordBlacklist[i]) {
 				// body has a blacklisted word
 				http.Error(w, "Post rejected", http.StatusBadRequest)
 				return
@@ -76,18 +84,15 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// angel mode masks client's real ip address
-	if len(newPostString) >= 4 && newPostString[:4] == "££" {
+	if len(incomingRequest.PostContent) >= 4 && incomingRequest.PostContent[:4] == "££" {
 		ipAddress = "1.1.1.1"
 		// unless it would result in an empty post, remove the leading "££" (four characters in reality)
-		if newPostString != "££" {
-			newPostString = newPostString[4:]
+		if incomingRequest.PostContent != "££" {
+			incomingRequest.PostContent = incomingRequest.PostContent[4:]
 		}
 	}
 
 	// set up data structure for decoding request
-	type GoogleResponse struct {
-		Success bool
-	}
 	var captchaResponse GoogleResponse
 
 	// verify captcha token by sending request to Google
@@ -216,9 +221,9 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// SQL WRITE: update Posts table
-	if replyId := r.Header.Get("reply-id"); replyId == "" {
+	if incomingRequest.ReplyId == 0 {
 		// new post
-		_, err = conn.Exec(context.Background(), "INSERT INTO Posts (Timestamp, Content, Ip, Hidden, Likes, Dislikes) VALUES ($1, $2, $3, false, 0, 0);", strconv.FormatInt(startTime.Unix(), 10), newPostString, ipAddress)
+		_, err = conn.Exec(context.Background(), "INSERT INTO Posts (Timestamp, Content, Ip, Hidden, Likes, Dislikes) VALUES ($1, $2, $3, false, 0, 0);", strconv.FormatInt(startTime.Unix(), 10), incomingRequest.PostContent, ipAddress)
 		if err != nil {
 			http.Error(w, "Unable to write new post (01): "+err.Error(), http.StatusInternalServerError)
 			return
@@ -231,7 +236,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// reply
 		var tempId int
-		err = conn.QueryRow(context.Background(), "INSERT INTO Posts (Timestamp, Content, Ip, Hidden, Likes, Dislikes, Op, Path) VALUES ($1, $2, $3, false, 0, 0, (SELECT Op FROM Posts WHERE Id = $4), (SELECT Path FROM Posts WHERE Id = $4)) RETURNING Id;", strconv.FormatInt(startTime.Unix(), 10), newPostString, ipAddress, replyId).Scan(&tempId)
+		err = conn.QueryRow(context.Background(), "INSERT INTO Posts (Timestamp, Content, Ip, Hidden, Likes, Dislikes, Op, Path) VALUES ($1, $2, $3, false, 0, 0, (SELECT Op FROM Posts WHERE Id = $4), (SELECT Path FROM Posts WHERE Id = $4)) RETURNING Id;", strconv.FormatInt(startTime.Unix(), 10), incomingRequest.PostContent, ipAddress, incomingRequest.ReplyId).Scan(&tempId)
 		if err != nil {
 			http.Error(w, "Unable to write new post (03): "+err.Error(), http.StatusInternalServerError)
 			return

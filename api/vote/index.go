@@ -2,13 +2,17 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/jackc/pgx/v4"
-	"io"
 	"net/http"
 	"os"
-	"strconv"
 )
+
+type IncomingVoteRequest struct {
+	PostId     int  `json:"postId"`
+	VoteAction bool `json:"voteAction"`
+}
 
 func Handler(w http.ResponseWriter, r *http.Request) {
 	var err error
@@ -37,21 +41,12 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// process request body
+	var incomingRequest IncomingVoteRequest
 	defer r.Body.Close()
-	var postId int64
-	if requestBody, err := io.ReadAll(r.Body); err != nil {
-		http.Error(w, "Unable to read request body: "+err.Error(), http.StatusInternalServerError)
+	err = json.NewDecoder(r.Body).Decode(&incomingRequest)
+	if err != nil {
+		http.Error(w, "Unable to decode json request body: "+err.Error(), http.StatusBadRequest)
 		return
-	} else if len(requestBody) == 0 {
-		// body is empty
-		http.Error(w, "Post id not found", http.StatusBadRequest)
-		return
-	} else {
-		postId, err = strconv.ParseInt(string(requestBody), 10, 64)
-		if err != nil {
-			http.Error(w, "Post id malformed", http.StatusBadRequest)
-			return
-		}
 	}
 
 	// connect to database
@@ -73,7 +68,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unable to read vote sender user profile: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	err = conn.QueryRow(context.Background(), "SELECT op FROM Posts where id=$1;", postId).Scan(&opPost)
+	err = conn.QueryRow(context.Background(), "SELECT op FROM Posts where id=$1;", incomingRequest.PostId).Scan(&opPost)
 	if err == pgx.ErrNoRows {
 		http.Error(w, "Post not found", http.StatusBadRequest)
 		return
@@ -88,7 +83,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 
 	// get recipient's ip
 	var recipientIp string
-	err = conn.QueryRow(context.Background(), "SELECT ip FROM Posts WHERE id = $1;", postId).Scan(&recipientIp)
+	err = conn.QueryRow(context.Background(), "SELECT ip FROM Posts WHERE id = $1;", incomingRequest.PostId).Scan(&recipientIp)
 	if err == pgx.ErrNoRows {
 		// silently fail if post's original author does not exist
 		// TODO: find a cleaner way to do this
@@ -99,8 +94,9 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// actually perform sql operation on the post itself and both user profiles
-	switch voteAction := r.Header.Get("vote-action"); voteAction {
-	case "like":
+	// TODO: send batch queries https://github.com/jackc/pgx/blob/master/batch_test.go#L30
+	if incomingRequest.VoteAction {
+		// like the post
 		_, err = conn.Exec(context.Background(), "UPDATE Users SET LastPostSeen = 0, LikesSent = LikesSent + 1 WHERE ip = $1;", ipAddress)
 		if err != nil {
 			http.Error(w, "Unable to perform vote operation on database (01): "+err.Error(), http.StatusInternalServerError)
@@ -111,12 +107,13 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Unable to perform vote operation on database (02): "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		_, err = conn.Exec(context.Background(), "UPDATE Posts SET Likes = Likes + 1 WHERE Id = $1;", postId)
+		_, err = conn.Exec(context.Background(), "UPDATE Posts SET Likes = Likes + 1 WHERE Id = $1;", incomingRequest.PostId)
 		if err != nil {
 			http.Error(w, "Unable to perform vote operation on database (03): "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-	case "dislike":
+	} else {
+		// dislike the post
 		_, err = conn.Exec(context.Background(), "UPDATE Users SET LastPostSeen = 0, DislikesSent = DislikesSent + 1 WHERE ip = $1;", ipAddress)
 		if err != nil {
 			http.Error(w, "Unable to perform vote operation on database (04): "+err.Error(), http.StatusInternalServerError)
@@ -127,14 +124,11 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Unable to perform vote operation on database (05): "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		_, err = conn.Exec(context.Background(), "UPDATE Posts SET Dislikes = Dislikes + 1 WHERE Id = $1;", postId)
+		_, err = conn.Exec(context.Background(), "UPDATE Posts SET Dislikes = Dislikes + 1 WHERE Id = $1;", incomingRequest.PostId)
 		if err != nil {
 			http.Error(w, "Unable to perform vote operation on database (06): "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-	default:
-		http.Error(w, "Vote action malformed or non existent", http.StatusBadRequest)
-		return
 	}
 
 	fmt.Fprintf(w, "Your request has been processed.")
