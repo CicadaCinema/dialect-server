@@ -94,41 +94,23 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// actually perform sql operation on the post itself and both user profiles
-	// TODO: send batch queries https://github.com/jackc/pgx/blob/master/batch_test.go#L30
+	var voteNoun string
 	if incomingRequest.VoteAction {
-		// like the post
-		_, err = conn.Exec(context.Background(), "UPDATE Users SET LastPostSeen = 0, LikesSent = LikesSent + 1 WHERE ip = $1;", ipAddress)
-		if err != nil {
-			http.Error(w, "Unable to perform vote operation on database (01): "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		_, err = conn.Exec(context.Background(), "UPDATE Users SET LikesReceived = LikesReceived + 1 WHERE Ip = $1;", recipientIp)
-		if err != nil {
-			http.Error(w, "Unable to perform vote operation on database (02): "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		_, err = conn.Exec(context.Background(), "UPDATE Posts SET Likes = Likes + 1 WHERE Id = $1;", incomingRequest.PostId)
-		if err != nil {
-			http.Error(w, "Unable to perform vote operation on database (03): "+err.Error(), http.StatusInternalServerError)
-			return
-		}
+		voteNoun = "Likes"
 	} else {
-		// dislike the post
-		_, err = conn.Exec(context.Background(), "UPDATE Users SET LastPostSeen = 0, DislikesSent = DislikesSent + 1 WHERE ip = $1;", ipAddress)
-		if err != nil {
-			http.Error(w, "Unable to perform vote operation on database (04): "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		_, err = conn.Exec(context.Background(), "UPDATE Users SET DislikesReceived = DislikesReceived + 1 WHERE Ip = $1;", recipientIp)
-		if err != nil {
-			http.Error(w, "Unable to perform vote operation on database (05): "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		_, err = conn.Exec(context.Background(), "UPDATE Posts SET Dislikes = Dislikes + 1 WHERE Id = $1;", incomingRequest.PostId)
-		if err != nil {
-			http.Error(w, "Unable to perform vote operation on database (06): "+err.Error(), http.StatusInternalServerError)
-			return
-		}
+		voteNoun = "Dislikes"
+	}
+	// batch copied from below example
+	// https://github.com/jackc/pgx/blob/38cd1b40aab7244bd3d593d5153619e03b09edca/batch_test.go#L30
+	batch := &pgx.Batch{}
+	batch.Queue(fmt.Sprintf("UPDATE Users SET LastPostSeen = 0, %[1]sSent = %[1]sSent + 1 WHERE ip = $1;", voteNoun), ipAddress)
+	batch.Queue(fmt.Sprintf("UPDATE Users SET %[1]sReceived = %[1]sReceived + 1 WHERE Ip = $1;", voteNoun), recipientIp)
+	batch.Queue(fmt.Sprintf("UPDATE Posts SET %[1]s = %[1]s + 1 WHERE Id = $1;", voteNoun), incomingRequest.PostId)
+	br := conn.SendBatch(context.Background(), batch)
+	_, err = br.Exec()
+	if err != nil {
+		http.Error(w, "Unable to perform vote operation on database: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	fmt.Fprintf(w, "Your request has been processed.")
