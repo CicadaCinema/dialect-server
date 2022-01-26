@@ -53,6 +53,8 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 
 	// get misc info about this request
 	ipAddress := r.Header.Get("x-real-ip")
+	fmt.Println("TEMP: RemoteAddr is " + r.RemoteAddr)
+	fmt.Println("TEMP: RemoteAddr ip is " + r.RemoteAddr[:strings.LastIndex(r.RemoteAddr, ":")])
 	captchaToken := r.Header.Get("captcha-token")
 	if ipAddress == "" {
 		http.Error(w, "Ip address not received", http.StatusBadRequest)
