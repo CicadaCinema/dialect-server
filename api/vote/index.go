@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v4"
 	"net/http"
 	"os"
+	"strings"
 )
 
 type IncomingVoteRequest struct {
@@ -34,7 +35,10 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// get misc info about this request
-	ipAddress := r.Header.Get("x-real-ip")
+	ipAddress := "1.2.3.4"
+	if !strings.HasPrefix(r.RemoteAddr, "[::1]") {
+		ipAddress = r.RemoteAddr
+	}
 	if ipAddress == "" {
 		http.Error(w, "Ip address not received", http.StatusBadRequest)
 		return
