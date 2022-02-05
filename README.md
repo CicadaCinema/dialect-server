@@ -1,3 +1,3 @@
 # Dialect Server
 
-### v0.3.3
+### v0.3.4
