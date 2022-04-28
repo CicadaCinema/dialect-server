@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/jackc/pgx/v4"
-	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -48,12 +47,11 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	if !strings.HasPrefix(r.RemoteAddr, "[::1]") {
 		ipAddress = r.RemoteAddr
 	}
-	captchaToken := r.Header.Get("captcha-token")
 	if ipAddress == "" {
+		// but the ipAddress is set to 1.2.3.4 before we even look at the request?
+		// need to make sure that ip is only 1.2.3.4 when debugging/running server locally
+		// TODO: fix this and the other instances of it
 		http.Error(w, "Ip address not received", http.StatusBadRequest)
-		return
-	} else if captchaToken == "" {
-		http.Error(w, "Captcha token empty", http.StatusBadRequest)
 		return
 	}
 
@@ -87,29 +85,6 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// set up data structure for decoding request
-	var captchaResponse GoogleResponse
-
-	// verify captcha token by sending request to Google
-	resp, err := http.Get(fmt.Sprintf("https://www.google.com/recaptcha/api/siteverify?secret=%s&response=%s", os.Getenv("RECAPTCHA_SECRET"), captchaToken))
-	if err != nil {
-		http.Error(w, "Unable to verify captcha with Google: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	// attempt to decode this request
-	err = json.NewDecoder(resp.Body).Decode(&captchaResponse)
-	if err != nil {
-		http.Error(w, "Unable to read Google's response body: "+err.Error(), http.StatusInternalServerError)
-		return
-	} else {
-		// read request properly
-		if !captchaResponse.Success {
-			http.Error(w, "Invalid captcha.", http.StatusForbidden)
-			return
-		}
-	}
-	defer resp.Body.Close()
-
 	// connect to database
 	conn, err := pgx.Connect(context.Background(), os.Getenv("DATABASE_URL"))
 	if err != nil {
@@ -119,48 +94,56 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close(context.Background())
 
 	// attempt to read user profile
-	newUser := false
-	var restricted bool
-	var restrictedMessage string
+	var verified bool
+	var captchaRequired bool
 	var lastPosted int64
-	err = conn.QueryRow(context.Background(), "SELECT restricted, restrictedmessage, lastposted FROM Users where ip=$1;", ipAddress).Scan(&restricted, &restrictedMessage, &lastPosted)
+	err = conn.QueryRow(context.Background(), "SELECT verified, captcharequired, lastposted FROM Users where ip=$1;", ipAddress).Scan(&verified, &captchaRequired, &lastPosted)
 	if err == pgx.ErrNoRows {
-		// this is user's first time posting here
-		newUser = true
-		// so check ip address first
-		resp, err := http.Get(fmt.Sprintf("http://check.getipintel.net/check.php?ip=%s&contact=email-1@example.com", ipAddress))
-		if err != nil {
-			http.Error(w, "Unable to verify IP address with getipintel: "+err.Error(), http.StatusInternalServerError)
+		// user must verify before they can post
+		http.Error(w, "User not found", http.StatusBadRequest)
+		return
+	} else if err != nil {
+		http.Error(w, "Unable to read user profile: "+err.Error(), http.StatusInternalServerError)
+		return
+	} else if startTime.Unix() < lastPosted+15 {
+		http.Error(w, "Please wait 15 seconds before posting again.", http.StatusForbidden)
+		return
+	} else if !verified {
+		// user must verify before they can post
+		http.Error(w, "User isn't verified.", http.StatusForbidden)
+		return
+	}
+
+	// check captcha only if necessary
+	if captchaRequired {
+		captchaToken := r.Header.Get("captcha-token")
+		if captchaToken == "" {
+			http.Error(w, "Captcha token empty", http.StatusBadRequest)
 			return
-		} else if body, err := io.ReadAll(resp.Body); err != nil {
-			http.Error(w, "Unable to read getipintel's response body: "+err.Error(), http.StatusInternalServerError)
+		}
+
+		// set up data structure for decoding request
+		var captchaResponse GoogleResponse
+
+		// verify captcha token by sending request to Google
+		resp, err := http.Get(fmt.Sprintf("https://www.google.com/recaptcha/api/siteverify?secret=%s&response=%s", os.Getenv("RECAPTCHA_SECRET"), captchaToken))
+		if err != nil {
+			http.Error(w, "Unable to verify captcha with Google: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// attempt to decode this request
+		err = json.NewDecoder(resp.Body).Decode(&captchaResponse)
+		if err != nil {
+			http.Error(w, "Unable to read Google's response body: "+err.Error(), http.StatusInternalServerError)
 			return
 		} else {
-			fmt.Println("DEBUG: getipintel's result for", ipAddress, "is", string(body))
-			floatResult, err := strconv.ParseFloat(string(body), 64)
-			if err != nil {
-				http.Error(w, "Unable to parse getipintel's result as float64: "+err.Error(), http.StatusInternalServerError)
-				return
-			} else if floatResult > 0.90 {
-				http.Error(w, "Usage through a VPN or proxy is not permitted.", http.StatusForbidden)
+			// read request properly
+			if !captchaResponse.Success {
+				http.Error(w, "Invalid captcha.", http.StatusForbidden)
 				return
 			}
 		}
 		defer resp.Body.Close()
-	} else if err != nil {
-		http.Error(w, "Unable to read user profile: "+err.Error(), http.StatusInternalServerError)
-		return
-	} else {
-		// the user profile exists
-		// so check if blocked first
-		// then check for cool-down
-		if restricted {
-			http.Error(w, restrictedMessage, http.StatusForbidden)
-			return
-		} else if startTime.Unix() < lastPosted+15 {
-			http.Error(w, "Please wait 15 seconds before posting again.", http.StatusForbidden)
-			return
-		}
 	}
 
 	// SQL READ: find a thread to show
@@ -199,20 +182,11 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// SQL WRITE: update Users table
-	if newUser {
-		_, err = conn.Exec(context.Background(), "INSERT INTO Users (ip, lastPosted, restricted, restrictedMessage, lastPostSeen, likesReceived, likesSent, dislikesReceived, dislikesSent) VALUES ($1, $2, false, '', $3, 0, 0, 0, 0);", ipAddress, strconv.FormatInt(startTime.Unix(), 10), threadOp)
-		if err != nil {
-			// could not write post for some reason
-			http.Error(w, "Unable to update new user's details: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-	} else {
-		_, err = conn.Exec(context.Background(), "UPDATE Users SET LastPosted = $1, LastPostSeen = $2 WHERE Ip = $3;", strconv.FormatInt(startTime.Unix(), 10), threadOp, ipAddress)
-		if err != nil {
-			// could not write post for some reason
-			http.Error(w, "Unable to update existing user's details: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
+	_, err = conn.Exec(context.Background(), "UPDATE Users SET LastPosted = $1, LastPostSeen = $2, verified = false WHERE Ip = $3;", strconv.FormatInt(startTime.Unix(), 10), threadOp, ipAddress)
+	if err != nil {
+		// could not update user details for some reason
+		http.Error(w, "Unable to update existing user's details: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	// SQL WRITE: update Posts table

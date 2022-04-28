@@ -58,6 +58,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	var opPost int64
 	err = conn.QueryRow(context.Background(), "SELECT lastpostseen FROM Users where ip=$1;", ipAddress).Scan(&lastPostSeen)
 	if err == pgx.ErrNoRows {
+		// user must post before they can vote
 		http.Error(w, "User not found", http.StatusBadRequest)
 		return
 	} else if err != nil {
