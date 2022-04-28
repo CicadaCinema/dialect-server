@@ -55,7 +55,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		// this is user's first time posting here
 		newUser = true
 		// so check ip address first
-		resp, err := http.Get(fmt.Sprintf("http://check.getipintel.net/check.php?ip=%s&contact=email-1@example.com", ipAddress))
+		resp, err := http.Get(fmt.Sprintf("http://check.getipintel.net/check.php?ip=%s&contact=email-2@example.com", ipAddress))
 		if err != nil {
 			http.Error(w, "Unable to verify IP address with getipintel: "+err.Error(), http.StatusInternalServerError)
 			return
