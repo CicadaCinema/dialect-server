@@ -15,6 +15,12 @@ type IncomingVoteRequest struct {
 	VoteAction bool `json:"voteAction"`
 }
 
+type VoteItem struct {
+	Likes    int `json:"likes"`
+	Dislikes int `json:"dislikes"`
+	Id       int `json:"id"`
+}
+
 func Handler(w http.ResponseWriter, r *http.Request) {
 	var err error
 
@@ -45,7 +51,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// connect to database
+	// SQL: connect to database
 	conn, err := pgx.Connect(context.Background(), os.Getenv("DATABASE_URL"))
 	if err != nil {
 		http.Error(w, "Unable to connect to database: "+err.Error(), http.StatusInternalServerError)
@@ -53,7 +59,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close(context.Background())
 
-	// get last op seen by user and the op of the post to be voted on
+	// SQL READ: get last op seen by user and the op of the post to be voted on
 	var lastPostSeen int64
 	var opPost int64
 	err = conn.QueryRow(context.Background(), "SELECT lastpostseen FROM Users where ip=$1;", ipAddress).Scan(&lastPostSeen)
@@ -78,7 +84,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// get recipient's ip
+	// SQL READ: get recipient's ip
 	var recipientIp string
 	err = conn.QueryRow(context.Background(), "SELECT ip FROM Posts WHERE id = $1;", incomingRequest.PostId).Scan(&recipientIp)
 	if err == pgx.ErrNoRows {
@@ -90,7 +96,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// actually perform sql operation on the post itself and both user profiles
+	// SQL WRITE: perform sql operation on both user profiles and the post which is being voted on
 	var voteNoun string
 	if incomingRequest.VoteAction {
 		voteNoun = "Likes"
@@ -109,6 +115,44 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unable to perform vote operation on database: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	err = br.Close()
+	if err != nil {
+		http.Error(w, "Unable to close BatchResults: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 
-	fmt.Fprintf(w, "Your request has been processed.")
+	// SQL READ: find the thread which is being voted on
+	rows, err := conn.Query(context.Background(), "SELECT likes, dislikes, id FROM Posts WHERE op = $1 ORDER BY Path;", opPost)
+	if err == pgx.ErrNoRows {
+		// could not find any threads at all
+		http.Error(w, "No threads found.", http.StatusInternalServerError)
+		return
+	} else if err != nil {
+		// could not find thread to show for some other reason
+		http.Error(w, "Unable to retrieve thread: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	// SQL READ: populate slices with row contents to get the votes for each reply
+	retrievedVotes := make([]VoteItem, 0)
+	for rows.Next() {
+		var postLikes int
+		var postDislikes int
+		var postId int
+		err := rows.Scan(&postLikes, &postDislikes, &postId)
+		if err != nil {
+			http.Error(w, "Unable to scan post in thread: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// add scanned values to slices
+		retrievedVotes = append(retrievedVotes, VoteItem{
+			Likes:    postLikes,
+			Dislikes: postDislikes,
+			Id:       postId,
+		})
+	}
+
+	// HTTP: finally show retrieved votes
+	json.NewEncoder(w).Encode(retrievedVotes)
 }

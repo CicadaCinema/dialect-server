@@ -19,7 +19,7 @@ type IncomingPostRequest struct {
 	ReplyId     int    `json:"replyId"`
 }
 
-type PostResponse struct {
+type PostItem struct {
 	PostContent string `json:"postContent"`
 	Path        string `json:"path"`
 	Id          int    `json:"id"`
@@ -85,7 +85,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// connect to database
+	// SQL: connect to database
 	conn, err := pgx.Connect(context.Background(), os.Getenv("DATABASE_URL"))
 	if err != nil {
 		http.Error(w, "Unable to connect to database: "+err.Error(), http.StatusInternalServerError)
@@ -93,7 +93,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close(context.Background())
 
-	// attempt to read user profile
+	// SQL READ: attempt to read user profile
 	var verified bool
 	var captchaRequired bool
 	var lastPosted int64
@@ -114,7 +114,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// check captcha only if necessary
+	// HTTP: check captcha only if necessary
 	if captchaRequired {
 		captchaToken := r.Header.Get("captcha-token")
 		if captchaToken == "" {
@@ -147,7 +147,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// SQL READ: find a thread to show
-	rows, err := conn.Query(context.Background(), "SELECT content, id, path, op FROM posts WHERE op = (SELECT op FROM posts WHERE ip != $1 AND Hidden = false ORDER BY RANDOM() LIMIT 1) ORDER BY Path;", ipAddress)
+	rows, err := conn.Query(context.Background(), "SELECT content, id, path, op FROM Posts WHERE op = (SELECT op FROM Posts WHERE ip != $1 AND Hidden = false ORDER BY RANDOM() LIMIT 1) ORDER BY Path;", ipAddress)
 	if err == pgx.ErrNoRows {
 		// could not find any threads at all
 		http.Error(w, "No threads found.", http.StatusInternalServerError)
@@ -159,26 +159,27 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	// SQL READ: populate slices with row contents
-	retrievedPosts := make([]PostResponse, 0)
+	// SQL READ: populate slices with row contents to get data for each reply
+	retrievedPosts := make([]PostItem, 0)
 	var threadOp int
 	for rows.Next() {
 		var postContent string
 		var postPath string
 		var postId int
-		// TODO: find better way to get OPs - currently we scan every post for its op even though they are all the same
+		// there is a small inefficiency here:
+		// we scan every post/reply for its OP even though it will be the same for each one
+		// (we need to update the Users table using threadOp later)
 		err := rows.Scan(&postContent, &postId, &postPath, &threadOp)
 		if err != nil {
 			http.Error(w, "Unable to scan post in thread: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		// add scanned values to slices
-		retrievedPosts = append(retrievedPosts, PostResponse{
+		retrievedPosts = append(retrievedPosts, PostItem{
 			PostContent: postContent,
 			Path:        postPath,
 			Id:          postId,
 		})
-
 	}
 
 	// SQL WRITE: update Users table
@@ -217,7 +218,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// HTTP: finally show chosen post
+	// HTTP: finally show retrieved thread
 	json.NewEncoder(w).Encode(retrievedPosts)
 	fmt.Println("DEBUG: this successful request took", time.Since(startTime).Milliseconds(), "ms")
 }
