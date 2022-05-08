@@ -55,7 +55,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// process request body
+	// HTTP: process request body
 	var incomingRequest IncomingPostRequest
 	defer r.Body.Close()
 	err = json.NewDecoder(r.Body).Decode(&incomingRequest)
@@ -97,7 +97,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	var verified bool
 	var captchaRequired bool
 	var lastPosted int64
-	err = conn.QueryRow(context.Background(), "SELECT verified, captcharequired, lastposted FROM Users where ip=$1;", ipAddress).Scan(&verified, &captchaRequired, &lastPosted)
+	err = conn.QueryRow(context.Background(), "SELECT verified, captcharequired, lastposted FROM Users WHERE ip=$1;", ipAddress).Scan(&verified, &captchaRequired, &lastPosted)
 	if err == pgx.ErrNoRows {
 		// user must verify before they can post
 		http.Error(w, "User not found", http.StatusBadRequest)
@@ -146,8 +146,9 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		defer resp.Body.Close()
 	}
 
-	// SQL READ: find a thread to show
-	rows, err := conn.Query(context.Background(), "SELECT content, id, path, op FROM Posts WHERE op = (SELECT op FROM Posts WHERE ip != $1 AND Hidden = false ORDER BY RANDOM() LIMIT 1) ORDER BY Path;", ipAddress)
+	// SQL READ/WRITE: find a thread to show, update view count
+	// this updates the view count of every post in that thread using the same SQL query, use https://stackoverflow.com/a/25650188 as reference
+	rows, err := conn.Query(context.Background(), "WITH updated AS (UPDATE Posts SET views = views + 1 WHERE op = (SELECT op FROM Posts WHERE ip != $1 AND Hidden = false ORDER BY RANDOM() LIMIT 1) RETURNING *) SELECT content, id, path, op FROM updated ORDER BY Path;", ipAddress)
 	if err == pgx.ErrNoRows {
 		// could not find any threads at all
 		http.Error(w, "No threads found.", http.StatusInternalServerError)
@@ -182,23 +183,32 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// SQL WRITE: update Users table
-	_, err = conn.Exec(context.Background(), "UPDATE Users SET LastPosted = $1, LastPostSeen = $2, verified = false WHERE Ip = $3;", strconv.FormatInt(startTime.Unix(), 10), threadOp, ipAddress)
+	// SQL WRITE: update Users table - post viewer
+	_, err = conn.Exec(context.Background(), "UPDATE Users SET LastPosted = $1, LastPostSeen = $2, verified = false, viewsSent = viewsSent + 1 WHERE Ip = $3;", strconv.FormatInt(startTime.Unix(), 10), threadOp, ipAddress)
 	if err != nil {
 		// could not update user details for some reason
-		http.Error(w, "Unable to update existing user's details: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Unable to update post viewer user's details: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// SQL WRITE: update Posts table
+	// SQL WRITE: update Users table - post author(s)
+	_, err = conn.Exec(context.Background(), "UPDATE Users SET viewsReceived = viewsReceived + 1 WHERE Ip IN (SELECT Ip from Posts WHERE Op = $1);", threadOp)
+	if err != nil {
+		// could not update user details for some reason
+		http.Error(w, "Unable to update post author(s) user's details: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// SQL WRITE: write new post to Posts table
 	if incomingRequest.ReplyId == 0 {
 		// new post
-		_, err = conn.Exec(context.Background(), "INSERT INTO Posts (Timestamp, Content, Ip, Hidden, Likes, Dislikes) VALUES ($1, $2, $3, false, 0, 0);", strconv.FormatInt(startTime.Unix(), 10), incomingRequest.PostContent, ipAddress)
+		_, err = conn.Exec(context.Background(), "INSERT INTO Posts (Timestamp, Content, Ip, Hidden, Likes, Dislikes, Views) VALUES ($1, $2, $3, false, 0, 0, 0);", strconv.FormatInt(startTime.Unix(), 10), incomingRequest.PostContent, ipAddress)
 		if err != nil {
 			http.Error(w, "Unable to write new post (01): "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		_, err = conn.Exec(context.Background(), "UPDATE Posts SET Op = Id, Path = CONCAT('/',CAST(id AS VARCHAR)) WHERE Op IS NULL AND Path IS NULL;")
+		// fill in remaining fields now that we know what Id is
+		_, err = conn.Exec(context.Background(), "UPDATE Posts SET Op = Id, Path = CONCAT('/',CAST(Id AS VARCHAR)) WHERE Op IS NULL AND Path IS NULL;")
 		if err != nil {
 			http.Error(w, "Unable to write new post (02): "+err.Error(), http.StatusInternalServerError)
 			return
@@ -206,11 +216,12 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// reply
 		var tempId int
-		err = conn.QueryRow(context.Background(), "INSERT INTO Posts (Timestamp, Content, Ip, Hidden, Likes, Dislikes, Op, Path) VALUES ($1, $2, $3, false, 0, 0, (SELECT Op FROM Posts WHERE Id = $4), (SELECT Path FROM Posts WHERE Id = $4)) RETURNING Id;", strconv.FormatInt(startTime.Unix(), 10), incomingRequest.PostContent, ipAddress, incomingRequest.ReplyId).Scan(&tempId)
+		err = conn.QueryRow(context.Background(), "INSERT INTO Posts (Timestamp, Content, Ip, Hidden, Likes, Dislikes, Views, Op, Path) VALUES ($1, $2, $3, false, 0, 0, 0, (SELECT Op FROM Posts WHERE Id = $4), (SELECT Path FROM Posts WHERE Id = $4)) RETURNING Id;", strconv.FormatInt(startTime.Unix(), 10), incomingRequest.PostContent, ipAddress, incomingRequest.ReplyId).Scan(&tempId)
 		if err != nil {
 			http.Error(w, "Unable to write new post (03): "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// fill in remaining fields now that we know what Id is
 		_, err = conn.Exec(context.Background(), "UPDATE Posts SET Path = CONCAT(Path, '/', CAST(Id AS VARCHAR)) WHERE Id = $1;", tempId)
 		if err != nil {
 			http.Error(w, "Unable to write new post (04): "+err.Error(), http.StatusInternalServerError)
