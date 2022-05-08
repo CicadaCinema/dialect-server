@@ -55,25 +55,28 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		// this is user's first time posting here
 		newUser = true
 		// so check ip address first
-		resp, err := http.Get(fmt.Sprintf("http://check.getipintel.net/check.php?ip=%s&contact=%s", ipAddress, os.Getenv("CONTACT_EMAIL")))
-		if err != nil {
-			http.Error(w, "Unable to verify IP address with getipintel: "+err.Error(), http.StatusInternalServerError)
-			return
-		} else if body, err := io.ReadAll(resp.Body); err != nil {
-			http.Error(w, "Unable to read getipintel's response body: "+err.Error(), http.StatusInternalServerError)
-			return
-		} else {
-			fmt.Println("DEBUG: getipintel's result for", ipAddress, "is", string(body))
-			floatResult, err := strconv.ParseFloat(string(body), 64)
+		// TEMPORARILY DISABLED because this check will always fail at some point (with a -5 error code) because this backend is not being hosted on a static ip
+		/*
+			resp, err := http.Get(fmt.Sprintf("http://check.getipintel.net/check.php?ip=%s&contact=%s", ipAddress, os.Getenv("CONTACT_EMAIL")))
 			if err != nil {
-				http.Error(w, "Unable to parse getipintel's result as float64: "+err.Error(), http.StatusInternalServerError)
+				http.Error(w, "Unable to verify IP address with getipintel: "+err.Error(), http.StatusInternalServerError)
 				return
-			} else if floatResult > 0.90 {
-				http.Error(w, "Usage through a VPN or proxy is not permitted.", http.StatusForbidden)
+			} else if body, err := io.ReadAll(resp.Body); err != nil {
+				http.Error(w, "Unable to read getipintel's response body: "+err.Error(), http.StatusInternalServerError)
 				return
+			} else {
+				fmt.Println("DEBUG: getipintel's result for", ipAddress, "is", string(body))
+				floatResult, err := strconv.ParseFloat(string(body), 64)
+				if err != nil {
+					http.Error(w, "Unable to parse getipintel's result as float64: "+err.Error(), http.StatusInternalServerError)
+					return
+				} else if floatResult > 0.90 {
+					http.Error(w, "Usage through a VPN or proxy is not permitted.", http.StatusForbidden)
+					return
+				}
 			}
-		}
-		defer resp.Body.Close()
+			defer resp.Body.Close()
+		*/
 	} else if err != nil {
 		http.Error(w, "Unable to read user profile: "+err.Error(), http.StatusInternalServerError)
 		return
