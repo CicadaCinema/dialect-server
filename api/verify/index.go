@@ -94,7 +94,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	if newUser {
 		// new users always require a captcha
 		captchaRequired = true
-		_, err = conn.Exec(context.Background(), "INSERT INTO Users (ip, lastPosted, restricted, restrictedMessage, lastPostSeen, likesReceived, likesSent, dislikesReceived, dislikesSent, viewsReceived, viewsSent, verified, captchaRequired) VALUES ($1, 0, false, '', 0, 0, 0, 0, 0, 0, 0, true, true);", ipAddress)
+		_, err = conn.Exec(context.Background(), "INSERT INTO Users (ip, lastPosted, lastPostSeen, verified) VALUES ($1, 0, 0, true);", ipAddress)
 		if err != nil {
 			// could not write new user details for some reason
 			http.Error(w, "Unable to write new user's details: "+err.Error(), http.StatusInternalServerError)

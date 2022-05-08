@@ -202,7 +202,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	// SQL WRITE: write new post to Posts table
 	if incomingRequest.ReplyId == 0 {
 		// new post
-		_, err = conn.Exec(context.Background(), "INSERT INTO Posts (Timestamp, Content, Ip, Hidden, Likes, Dislikes, Views) VALUES ($1, $2, $3, false, 0, 0, 0);", strconv.FormatInt(startTime.Unix(), 10), incomingRequest.PostContent, ipAddress)
+		_, err = conn.Exec(context.Background(), "INSERT INTO Posts (Timestamp, Content, Ip) VALUES ($1, $2, $3);", strconv.FormatInt(startTime.Unix(), 10), incomingRequest.PostContent, ipAddress)
 		if err != nil {
 			http.Error(w, "Unable to write new post (01): "+err.Error(), http.StatusInternalServerError)
 			return
@@ -216,7 +216,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// reply
 		var tempId int
-		err = conn.QueryRow(context.Background(), "INSERT INTO Posts (Timestamp, Content, Ip, Hidden, Likes, Dislikes, Views, Op, Path) VALUES ($1, $2, $3, false, 0, 0, 0, (SELECT Op FROM Posts WHERE Id = $4), (SELECT Path FROM Posts WHERE Id = $4)) RETURNING Id;", strconv.FormatInt(startTime.Unix(), 10), incomingRequest.PostContent, ipAddress, incomingRequest.ReplyId).Scan(&tempId)
+		err = conn.QueryRow(context.Background(), "INSERT INTO Posts (Timestamp, Content, Ip, Op, Path) VALUES ($1, $2, $3, (SELECT Op FROM Posts WHERE Id = $4), (SELECT Path FROM Posts WHERE Id = $4)) RETURNING Id;", strconv.FormatInt(startTime.Unix(), 10), incomingRequest.PostContent, ipAddress, incomingRequest.ReplyId).Scan(&tempId)
 		if err != nil {
 			http.Error(w, "Unable to write new post (03): "+err.Error(), http.StatusInternalServerError)
 			return
