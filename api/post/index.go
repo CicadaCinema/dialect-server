@@ -208,6 +208,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// fill in remaining fields now that we know what Id is
+		// TODO: in production I saw two cases of OP being null, must add further detailed logging to try and catch this bug
 		_, err = conn.Exec(context.Background(), "UPDATE Posts SET Op = Id, Path = CONCAT('/',CAST(Id AS VARCHAR)) WHERE Op IS NULL AND Path IS NULL;")
 		if err != nil {
 			http.Error(w, "Unable to write new post (02): "+err.Error(), http.StatusInternalServerError)
