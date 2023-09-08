@@ -15,6 +15,10 @@ type VerifyResponse struct {
 }
 
 func Handler(w http.ResponseWriter, r *http.Request) {
+	// set headers necessary for local development
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Captcha-Token")
+
 	// ensure we are receiving a verify request
 	if r.Method == "OPTIONS" {
 		return
@@ -101,8 +105,8 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		// 10% chance of requiring a captcha
-		captchaRequired = rand.Float64() < 0.1
+		// 50% chance of requiring a captcha
+		captchaRequired = rand.Float64() < 0.5
 		_, err = conn.Exec(context.Background(), "UPDATE Users SET verified = true, captchaRequired = $1 WHERE Ip = $2;", captchaRequired, ipAddress)
 		if err != nil {
 			// could not update user details for some reason

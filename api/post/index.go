@@ -33,6 +33,10 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	var err error
 	startTime := time.Now()
 
+	// set headers necessary for local development
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Captcha-Token")
+
 	// ensure we are receiving a post request
 	fmt.Println("DEBUG: incoming", r.Method)
 	if r.Method == "OPTIONS" {
